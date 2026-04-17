@@ -172,8 +172,7 @@ GuiMain::GuiMain() {
                     if (flagFile)
                         std::fclose(flagFile);
                 }
-                triggerRumbleClick.store(true, std::memory_order_release);
-                triggerSettingsSound.store(true, std::memory_order_release);
+                triggerSettingsFeedback();
                 return true;
             }
 
@@ -246,7 +245,7 @@ inline void drawMemoryWidget(auto renderer) {
         
         if (freeRamMB >= 9.0f){
             ramColor = tsl::healthyRamTextColor;
-        } else if (freeRamMB >= 4.0f) {
+        } else if (freeRamMB >= 5.0f) {
             ramColor = tsl::neutralRamTextColor;
         } else {
             ramColor = tsl::badRamTextColor;
@@ -387,8 +386,7 @@ void GuiMain::toggleTitleIdDisplay() {
     }
     
     // Trigger feedback
-    triggerRumbleClick.store(true, std::memory_order_release);
-    triggerSettingsSound.store(true, std::memory_order_release);
+    triggerSettingsFeedback();
 }
 
 void GuiMain::updateStatus(const SystemModule &module) {

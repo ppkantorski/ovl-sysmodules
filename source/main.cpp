@@ -1,4 +1,5 @@
 #define TESLA_INIT_IMPL
+#include <exception_wrap.hpp>
 #include "gui_main.hpp"
 
 class OverlaySysmodules : public tsl::Overlay {
