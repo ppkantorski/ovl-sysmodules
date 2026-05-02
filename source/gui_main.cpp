@@ -187,9 +187,9 @@ GuiMain::GuiMain() {
         u32  gracefulCmd = 0;
         u32  gracefulTimeoutMs = 1000;
         {
-            cJSON* svcItem = cJSON_GetObjectItem(toolboxFileContent, "graceful_shutdown_service");
-            cJSON* cmdItem = cJSON_GetObjectItem(toolboxFileContent, "graceful_shutdown_cmd");
-            cJSON* toItem  = cJSON_GetObjectItem(toolboxFileContent, "graceful_shutdown_timeout_ms");
+            cJSON* svcItem = cJSON_GetObjectItem(toolboxFileContent, "shutdown_service");
+            cJSON* cmdItem = cJSON_GetObjectItem(toolboxFileContent, "shutdown_cmd");
+            cJSON* toItem  = cJSON_GetObjectItem(toolboxFileContent, "shutdown_timeout_ms");
             if (svcItem && cJSON_IsString(svcItem)
                 && cmdItem && cJSON_IsNumber(cmdItem)
                 && toItem  && cJSON_IsNumber(toItem)) {
