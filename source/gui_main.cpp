@@ -20,6 +20,56 @@ constexpr const char* const descriptions[2][2] = {
 // Pre-allocate buffer for file reading to avoid repeated allocations
 static char fileBuffer[4096];
 
+// ----------------------------------------------------------------------------
+// tryGracefulShutdown
+//
+// Attempts cooperative shutdown via the IPC contract declared in the module's
+// toolbox.json. Returns true only if the process actually exited within the
+// declared timeout. Returns false in every other case — service unreachable,
+// IPC dispatch failed, or the process was still alive when the deadline hit.
+//
+// Caller MUST follow up with pmshellTerminateProgram on a false return to
+// guarantee the process dies (a frozen sysmodule will return false here).
+//
+// We never block indefinitely. The polling interval is fixed at 50 ms so a
+// 1 s timeout costs at most ~20 cheap IPC calls to pmdmnt. The cost is paid
+// only once per kill action, only on modules that opted in.
+// ----------------------------------------------------------------------------
+static bool tryGracefulShutdown(const SystemModule& module) {
+    if (!module.hasGracefulShutdown)
+        return false;
+
+    Service srv;
+    Result rc = smGetService(&srv, module.gracefulShutdownService);
+    if (R_FAILED(rc))
+        return false; // Service not registered (sysmodule may not be ready); fall back to force-kill.
+
+    // Send the declared command with no input and no output. Any non-default
+    // arg shape would risk schema mismatch across versions, so the contract
+    // is intentionally limited to a void → void RPC.
+    rc = serviceDispatch(&srv, module.gracefulShutdownCmd);
+    serviceClose(&srv);
+    if (R_FAILED(rc))
+        return false; // Module rejected the command or dispatcher error.
+
+    // Poll pmdmnt for process exit. The cooperative module's IPC handler is
+    // expected to have already restored its kernel state by the time it
+    // replied — what we're waiting on here is the main loop noticing
+    // gRunning=false (or equivalent) and the process actually unloading.
+    constexpr u64 pollIntervalNs = 50'000'000ULL; // 50 ms
+    const u64 timeoutNs = static_cast<u64>(module.gracefulShutdownTimeoutMs) * 1'000'000ULL;
+    u64 elapsedNs = 0;
+    while (elapsedNs < timeoutNs) {
+        u64 pid = 0;
+        Result pmrc = pmdmntGetProcessId(&pid, module.programId);
+        if (R_FAILED(pmrc) || pid == 0)
+            return true; // Process is gone — graceful exit confirmed.
+        svcSleepThread(pollIntervalNs);
+        elapsedNs += pollIntervalNs;
+    }
+    return false; // Timed out; caller will force-kill.
+}
+
 GuiMain::GuiMain() {
     // Pre-allocate vector for typical number of modules (avoids reallocations)
     m_sysmoduleListItems.reserve(32);
@@ -117,6 +167,45 @@ GuiMain::GuiMain() {
             listItemText += versionItem->valuestring;
         }
 
+        // -------------------------------------------------------------------
+        // Optional graceful-shutdown contract.
+        //
+        // Sysmodules that own kernel-level state (PCV table mods, hardware
+        // overrides, etc.) may declare an IPC endpoint that ovlSysmodules
+        // calls *before* force-killing them, giving the module a chance to
+        // restore that state cleanly. The contract is fully opt-in: any
+        // toolbox.json without these three fields keeps the original
+        // pmshellTerminateProgram-only behavior, and no sysmodule receives
+        // special treatment based on its title ID.
+        //
+        // All three fields must be present and valid for the contract to
+        // activate. If any are missing or malformed, we silently fall back
+        // to the legacy force-kill path — preserving the previous behavior.
+        // -------------------------------------------------------------------
+        bool gracefulOk = false;
+        char gracefulSvc[16] = {};
+        u32  gracefulCmd = 0;
+        u32  gracefulTimeoutMs = 1000;
+        {
+            cJSON* svcItem = cJSON_GetObjectItem(toolboxFileContent, "graceful_shutdown_service");
+            cJSON* cmdItem = cJSON_GetObjectItem(toolboxFileContent, "graceful_shutdown_cmd");
+            cJSON* toItem  = cJSON_GetObjectItem(toolboxFileContent, "graceful_shutdown_timeout_ms");
+            if (svcItem && cJSON_IsString(svcItem)
+                && cmdItem && cJSON_IsNumber(cmdItem)
+                && toItem  && cJSON_IsNumber(toItem)) {
+                const char* svcStr = svcItem->valuestring;
+                const size_t svcLen = std::strlen(svcStr);
+                // libnx service names are at most 8 bytes (smEncodeName).
+                if (svcLen > 0 && svcLen <= 8 && cmdItem->valueint >= 0 && toItem->valueint > 0) {
+                    std::memcpy(gracefulSvc, svcStr, svcLen);
+                    gracefulSvc[svcLen] = '\0';
+                    gracefulCmd        = static_cast<u32>(cmdItem->valueint);
+                    gracefulTimeoutMs  = static_cast<u32>(toItem->valueint);
+                    gracefulOk = true;
+                }
+            }
+        }
+
         // Create formatted title ID string
         char titleIdBuffer[32];
         std::snprintf(titleIdBuffer, sizeof(titleIdBuffer), "%016lX", sysmoduleProgramId);
@@ -127,7 +216,12 @@ GuiMain::GuiMain() {
             .needReboot = static_cast<bool>(cJSON_IsTrue(rebootItem)),
             .displayName = listItemText,
             .titleIdStr = titleIdBuffer,
+            .hasGracefulShutdown = gracefulOk,
+            .gracefulShutdownCmd = gracefulCmd,
+            .gracefulShutdownTimeoutMs = gracefulTimeoutMs,
         };
+        // gracefulShutdownService is a fixed array — copy after aggregate init
+        std::memcpy(module.gracefulShutdownService, gracefulSvc, sizeof(module.gracefulShutdownService));
 
         cJSON_Delete(toolboxFileContent);
 
@@ -144,8 +238,21 @@ GuiMain::GuiMain() {
             
             if (click & KEY_A && !module.needReboot) {
                 if (this->isRunning(module)) {
-                    /* Kill process. */
-                    pmshellTerminateProgram(module.programId);
+                    /* Try cooperative shutdown first if the module declared support
+                     * for it in its toolbox.json. tryGracefulShutdown returns true
+                     * only on confirmed exit within the declared timeout. */
+                    bool exited = tryGracefulShutdown(module);
+
+                    /* Force-kill fallback. Always runs when:
+                     *   - the module didn't declare graceful shutdown (legacy path)
+                     *   - the IPC failed (service down, dispatch error)
+                     *   - the module is frozen (timed out — and the user wants it dead)
+                     * isRunning() re-check avoids a redundant terminate call in the
+                     * (small) race where the process exited between the timeout and
+                     * here. */
+                    if (!exited && this->isRunning(module)) {
+                        pmshellTerminateProgram(module.programId);
+                    }
                 } else {
                     /* Start process. */
                     const NcmProgramLocation programLocation{
