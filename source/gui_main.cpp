@@ -484,9 +484,9 @@ tsl::elm::Element* GuiMain::createUI() {
         // modules that declared a graceful-shutdown contract. The latter can
         // be stopped safely at runtime even though they require a reboot to
         // start; grouping them here makes them interactable in the overlay.
-        sysmoduleList->addItem(new tsl::elm::CategoryHeader("Dynamic   Auto Start   Toggle", true));
+        sysmoduleList->addItem(new tsl::elm::CategoryHeader("Dynamic   Auto Start   Toggle", true));
         sysmoduleList->addItem(new tsl::elm::CustomDrawer([](tsl::gfx::Renderer* renderer, s32 x, s32 y, s32 w, s32 h) {
-            renderer->drawString(" These sysmodules can be toggled at any time.", false, x + 5, y + 13, 15, tsl::warningTextColor);
+            renderer->drawString(" These sysmodules can be toggled at any time.", false, x + 5, y + 13, 15, tsl::warningTextColor);
         }), 30);
         for (const auto& module : this->m_sysmoduleListItems) {
             if (!module.needReboot || module.hasGracefulShutdown) {
@@ -497,9 +497,9 @@ tsl::elm::Element* GuiMain::createUI() {
 
         // Static section: modules that require a reboot AND have no
         // graceful-shutdown contract. These cannot be toggled at runtime.
-        sysmoduleList->addItem(new tsl::elm::CategoryHeader("Static   Auto Start", true));
+        sysmoduleList->addItem(new tsl::elm::CategoryHeader("Static   Auto Start", true));
         sysmoduleList->addItem(new tsl::elm::CustomDrawer([](tsl::gfx::Renderer* renderer, s32 x, s32 y, s32 w, s32 h) {
-            renderer->drawString(" These sysmodules need a reboot to work.", false, x + 5, y + 13, 15, tsl::warningTextColor);
+            renderer->drawString(" These sysmodules need a reboot to work.", false, x + 5, y + 13, 15, tsl::warningTextColor);
         }), 30);
         for (const auto& module : this->m_sysmoduleListItems) {
             if (module.needReboot && !module.hasGracefulShutdown) {
